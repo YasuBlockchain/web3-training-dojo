@@ -1,4 +1,5 @@
 import {ChainModel} from "./models";
+import Web3 from "web3";
 
 export const CHAIN_GOERLI: ChainModel = {
     id: 5,
@@ -19,3 +20,7 @@ export const ChainList: ChainModel[] = [
     CHAIN_GOERLI,
     CHAIN_POLYGON
 ]
+
+export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+export const isZeroAddress = (address: string) => Web3.utils.isAddress(address) && Web3.utils.toChecksumAddress(address) === Web3.utils.toChecksumAddress(ZERO_ADDRESS);

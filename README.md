@@ -40,5 +40,5 @@ The .env (not the .env.local) file has empty variable. Copy & paste them into yo
 Good to know
 
 - Infura is a node supplier
-- Most of the wallets respect the [EIP-1102](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1102.md) and
-  the [EIP-1193](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1193.md) to normalize their API. 
+- Most Ethereum-supported browsers like MetaMask have an [EIP-1102](https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1102.md) compliant provider available at window.ethereum. 
+  Meaning that a wallet that respects the EIP, injects by default the global variable window.ethereum

@@ -1,4 +1,5 @@
-import {BigNumber, Event} from "ethers";
+import {BigNumber} from "ethers";
+import {EventData} from "web3-eth-contract";
 
 export interface WalletModel {
     address?: string
@@ -17,11 +18,11 @@ export interface ChainModel {
 export interface ERC20Model {
     name?: string,
     symbol?: string,
-    balanceOfConnectedAccount?: BigNumber
-    totalSupply?: BigNumber
+    balanceOfConnectedAccount?: string
+    totalSupply?: string
     events?: {
-        transferFrom?: Event[],
-        transferTo?: Event[],
+        transferFrom?: EventData[],
+        transferTo?: EventData[],
     }
 }
 

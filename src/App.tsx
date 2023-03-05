@@ -1,11 +1,15 @@
 import React, {FC, useEffect, useState} from 'react';
 import {ethers, Event, Transaction} from "ethers";
 import {ERC20Model, WalletModel} from "./models";
-import {CHAIN_GOERLI, CHAIN_POLYGON, ChainList} from "./constants";
+import {CHAIN_GOERLI, CHAIN_POLYGON, ChainList, isZeroAddress, ZERO_ADDRESS} from "./constants";
 import {toast} from "react-toastify";
 import DataTable, {TableColumn} from "react-data-table-component";
 import {useFormik} from "formik";
 import ABI from "./artifacts/ABI.json"
+import {AbiItem} from "web3-utils";
+import {EventData, Filter} from "web3-eth-contract";
+
+import Web3 from "web3";
 
 const queryString = window.location.search;
 const urlParams = new URLSearchParams(queryString);
@@ -14,7 +18,9 @@ const connectAutomtically = urlParams.get('connectAutomatically')
 const rpcProvider = new ethers.providers.WebSocketProvider(`wss://goerli.infura.io/ws/v3/${process.env.REACT_APP_INFURA_API_KEY}`)
 const web3Provider = new ethers.providers.Web3Provider(window.ethereum)
 
+
 function App() {
+
     const [connectedWallet, setConnectedWallet] = useState<WalletModel | null>(null)
 
     useEffect(() => {
@@ -22,7 +28,6 @@ function App() {
             try {
                 handleWalletLogin()
             } catch (e: any) {
-                alert('ici')
                 toast.error(e)
             }
         }
@@ -33,52 +38,47 @@ function App() {
 
         // Always check if ethereum global variable is defined
         if (typeof window.ethereum !== 'undefined') {
+            const web3WithInjectedProvider = new Web3(window.ethereum)
 
-            // Request wallet account
-            web3Provider.send('eth_requestAccounts', []).then(() => {
+            // Request wallet accounts
+            web3WithInjectedProvider.eth.requestAccounts().then(accounts => {
+                if (accounts.length == 0) {
+                    toast.error("Please, select at least one account", {autoClose: false})
+                    throw new Error('0 account selected')
+                }
 
-                // Get Network & allow only BSC & Goerli chain
-                web3Provider.getNetwork().then((r: any) => {
+                setConnectedWallet(prev => ({...prev, address: accounts[0]}))
 
-                    const {chainId} = r
-                    if ([CHAIN_GOERLI.id, CHAIN_POLYGON.id].includes(chainId)) {
-                        // Get Chain data
-                        setConnectedWallet(prev => ({...prev, chain: ChainList.find(item => item.id == chainId)}))
+                // Get account balance
+                web3WithInjectedProvider.eth.getBalance(accounts[0]).then(balance => {
 
-                        // Get account address
-                        web3Provider.getSigner().getAddress().then((address: string) => {
+                    setConnectedWallet(prev => ({...prev, balanceInWei: balance.toString()}))
+                    // Get Network & allow only BSC & Goerli chain
+                    web3WithInjectedProvider.eth.getChainId().then(chainId => {
+                        if ([CHAIN_GOERLI.id, CHAIN_POLYGON.id].includes(chainId)) {
+                            // Get Chain data
+                            setConnectedWallet(prev => ({...prev, chain: ChainList.find(item => item.id == chainId)}))
 
-                            setConnectedWallet(prev => ({...prev, address}))
-                            // Set account balance
-                            web3Provider.getBalance(address).then(balance => {
+                            toast.dismiss()
+                            toast.success("Connnected!")
+                        } else {
+                            // It will switch automatically to Goerli Testnet & refresh the page because of chainChanged listener
+                            toast.dismiss()
+                            toast.info("Chain not supported. Switching to Goerli Testnet ...", {autoClose: false})
+                            setTimeout(() => {
+                                handleSwitchToGoerliChain()
+                            }, 1500)
+                        }
+                    }).catch(e => {
+                        toast.error("Get network failed.", {autoClose: false})
+                        throw e
+                    })
 
-                                setConnectedWallet(prev => ({...prev, balanceInWei: balance.toString()}))
 
-                                toast.dismiss()
-                                toast.success("Connnected!")
-
-                                // Listen to all account changes & network swtich
-                                listeners()
-                            }).catch(e => {
-                                toast.error("Failed to get balance.", {autoClose: false})
-                                throw e
-                            })
-
-                        }).catch(e => {
-                            toast.error("Failed to get signer address.", {autoClose: false})
-                            throw e
-                        })
-
-                    } else {
-                        // It will switch automatically to Goerli Testnet & refresh the page because of chainChanged listener
-                        toast.dismiss()
-                        toast.info("Chain not supported. Switching to Goerli Testnet ...", {autoClose: false})
-                        setTimeout(() => {
-                            handleSwitchToGoerliChain()
-                        }, 1500)
-                    }
+                    // Listen to all account changes & network swtich
+                    listeners()
                 }).catch(e => {
-                    toast.error("Get network failed.", {autoClose: false})
+                    toast.error("Failed to get balance.", {autoClose: false})
                     throw e
                 })
             }).catch(e => {
@@ -92,7 +92,6 @@ function App() {
 
     const refreshBalance = (address: string) => {
         web3Provider.getBalance(address).then(balance => {
-            console.log(balance.toString())
             setConnectedWallet(prev => ({...prev, balanceInWei: balance.toString()}))
         }).catch(() => {
             toast.error("Failed to refresh balance.", {autoClose: false})
@@ -211,7 +210,7 @@ function App() {
                     </div>
                 }
 
-                {connectedWallet && [CHAIN_GOERLI.id, CHAIN_POLYGON.id].includes(connectedWallet.chain!.id) && <>
+                {connectedWallet && connectedWallet.chain && [CHAIN_GOERLI.id, CHAIN_POLYGON.id].includes(connectedWallet.chain.id) && <>
                     <div className="row">
                         <div className="col-6 d-flex align-items-center">
                             <h5>{connectedWallet.chain?.name}</h5>
@@ -250,7 +249,6 @@ function App() {
     </div>
 }
 
-
 type ERC20ContainerProps = {
     connectedWallet: WalletModel
     refreshBalance: (address: string) => void
@@ -262,78 +260,121 @@ const ERC20Container: FC<ERC20ContainerProps> = ({connectedWallet, refreshBalanc
     const [loadingErc20data, setLoadingErc20data] = useState<boolean>(true)
     const [erc20, setErc20] = useState<ERC20Model | null>(null)
 
-    const columnsTransferFrom: TableColumn<Event>[] = [
+    const columnsTransferFrom: TableColumn<EventData>[] = [
         {name: '#', selector: row => row.transactionHash},
         {name: 'Block', selector: row => row.blockNumber, maxWidth: '50px'},
         {name: 'Transaction index', selector: row => row.transactionIndex, maxWidth: '150px'},
-        {name: 'To', selector: row => row.args?.to},
-        {name: 'Value in Wei', selector: row => row.args?.value.toString()}
+        {name: 'To', selector: row => row.returnValues?.to},
+        {name: 'Value in Wei', selector: row => row.returnValues?.value.toString()}
     ];
 
-    const columnsTransferTo: TableColumn<Event>[] = [
+    const columnsTransferTo: TableColumn<EventData>[] = [
         {name: '#', selector: row => row.transactionHash},
         {name: 'Block', selector: row => row.blockNumber, maxWidth: '50px'},
         {name: 'Transaction index', selector: row => row.transactionIndex, maxWidth: '150px'},
-        {name: 'From', selector: row => row.args?.from},
-        {name: 'Value in Wei', selector: row => row.args?.value.toString()}
+        {name: 'From', selector: row => row.returnValues?.from},
+        {name: 'Value in Wei', selector: row => row.returnValues?.value.toString()}
     ];
 
     useEffect(() => {
         getERC20Data(connectedWallet.address || '')
     }, [])
 
-    // Name, symbol, totalSupply, balanceOf signer, tokens transfers from signer, tokens transfers to signer (https://docs.ethers.org/v5/api/contract/example/#erc20-queryfilter)
-    const getERC20Data = (signerAddress: string) => {
+    // Name, symbol, totalSupply, balanceOf signer, tokens transfers from signer, tokens transfers to signer
+    const getERC20Data = async (signerAddress: string) => {
         setLoadingErc20data(true)
 
-        const contract = new ethers.Contract((process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || ""), ABI, rpcProvider)
+        const web3WithRPCNodeProvider = new Web3(`wss://goerli.infura.io/ws/v3/${process.env.REACT_APP_INFURA_API_KEY}`)
+
+        const contract = new web3WithRPCNodeProvider.eth.Contract(ABI as AbiItem[], process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || "")
 
         // Name
-        contract.name().then((name: string) => {
+
+        contract.methods.name().call().then((name: string) => {
 
             setErc20(prev => ({...prev, name}))
             // Symbol
-            contract.symbol().then((symbol: string) => {
+            contract.methods.symbol().call().then((symbol: string) => {
                 setErc20(prev => ({...prev, symbol: symbol}))
                 // Total supplu
-                contract.totalSupply().then((supply: any) => {
+                contract.methods.totalSupply().call().then((supply: any) => {
                     setErc20(prev => ({...prev, totalSupply: supply}))
 
                     // Balance of signer
-                    contract.balanceOf(signerAddress).then((balance: any) => {
+                    contract.methods.balanceOf(signerAddress).call().then((balance: any) => {
 
                         setErc20(prev => ({...prev, balanceOfConnectedAccount: balance}))
 
                         // Transfers from signer
-                        const filterTransferFrom = contract.filters.Transfer(signerAddress, null) // Tokens sent from signer
-                        const filterTransferTo = contract.filters.Transfer(null, signerAddress) // Tokens sent to signer
-                        contract.queryFilter(filterTransferFrom).then((r: Event[]) => {
+                        contract.getPastEvents('Transfer', {fromBlock: 0, toBlock: "latest", filter: {from: signerAddress}}).then(r => {
                             setErc20(prev => ({...prev, events: {...prev?.events, transferFrom: r}}))
 
 
-                            contract.queryFilter(filterTransferTo).then((r: Event[]) => {
+                            contract.getPastEvents('Transfer', {fromBlock: 0, toBlock: "latest", filter: {to: signerAddress}}).then(r => {
 
                                 setErc20(prev => ({...prev, events: {...prev?.events, transferTo: r}}))
 
                                 // Listen to incoming events from signer:
-                                contract.on(filterTransferFrom, (from, to, amount, event) => {
-                                    setErc20(prev => ({
-                                        ...prev,
-                                        events: {...prev?.events, transferFrom: prev?.events?.transferFrom ? [...prev.events.transferFrom, event] : []},
-                                        balanceOfConnectedAccount: prev?.balanceOfConnectedAccount?.sub(amount),
-                                        totalSupply: prev?.totalSupply?.sub(amount)
-                                    }))
-                                });
-                                // Listen to incoming events to signer:
-                                contract.on(filterTransferTo, (from, to, amount, event) => {
-                                    setErc20(prev => ({
-                                        ...prev,
-                                        events: {...prev?.events, transferTo: prev?.events?.transferTo ? [...prev.events.transferTo, event] : []},
-                                        balanceOfConnectedAccount: prev?.balanceOfConnectedAccount?.add(amount),
-                                        totalSupply: prev?.totalSupply?.add(amount)
-                                    }))
-                                });
+                                // contract.events.Transfer().on('data', (a: any, b: any, c: any) => {
+                                /*setErc20(prev => ({
+                                    ...prev,
+                                    events: {...prev?.events, transferFrom: prev?.events?.transferFrom ? [...prev.events.transferFrom, event] : []},
+                                    balanceOfConnectedAccount: prev?.balanceOfConnectedAccount?.sub(amount),
+                                    totalSupply: prev?.totalSupply?.sub(amount)
+                                })*/
+                                // })
+                                // // Listen to incoming events to signer:
+                                // contract.on(filterTransferTo, (from, to, amount, event) => {
+                                //     setErc20(prev => ({
+                                //         ...prev,
+                                //         events: {...prev?.events, transferTo: prev?.events?.transferTo ? [...prev.events.transferTo, event] : []},
+                                //         balanceOfConnectedAccount: prev?.balanceOfConnectedAccount?.add(amount),
+                                //         totalSupply: prev?.totalSupply?.add(amount)
+                                //     }))
+                                // });
 
+                                // https://www.coinclarified.com/p/3-ways-to-subscribe-to-events-with-web3-js/
+                                // -- Transfer from listener
+                                contract.events.Transfer({filter: {from: signerAddress}})
+                                    .on('data', (event: EventData) => {
+                                        setErc20(prev => {
+                                            if(prev?.balanceOfConnectedAccount) {
+                                                prev.balanceOfConnectedAccount = Web3.utils.toBN(prev.balanceOfConnectedAccount).sub(Web3.utils.toBN(event.returnValues.value)).toString()
+                                                console.log(prev?.balanceOfConnectedAccount)
+                                            }
+
+                                            return {
+                                                ...prev,
+                                                events: {...prev?.events, transferFrom: prev?.events?.transferFrom ? [...prev.events.transferFrom, event] : []},
+                                            }
+                                        })
+                                    })
+
+                                // -- Mint Listener
+                                contract.events.Transfer({filter: {to: signerAddress}})
+                                    .on('data', (event: EventData) => {
+                                        setErc20(prev => {
+                                            // Increase total supply in case of a mint
+                                            if(isZeroAddress(event.returnValues.from)){
+                                                if(prev?.totalSupply){
+                                                    prev.totalSupply = Web3.utils.toBN(prev.totalSupply).add(Web3.utils.toBN(event.returnValues.value)).toString()
+                                                }
+                                            }
+
+                                            // Decrease signer balance
+                                            if(prev?.balanceOfConnectedAccount) {
+                                                prev.balanceOfConnectedAccount = Web3.utils.toBN(prev.balanceOfConnectedAccount).add(Web3.utils.toBN(event.returnValues.value)).toString()
+                                            }
+
+                                            return {
+                                                ...prev,
+                                                events: {...prev?.events, transferTo: prev?.events?.transferTo ? [...prev.events.transferTo, event] : []},
+                                            }
+                                        })
+                                    })
+
+                                // contract.events.Transfer({filter: {to: signerAddress}})
+                                //     .on('data', (event: any) => console.log('listener transferTo data', event))
                                 setLoadingErc20data(false)
                             })
                         })
@@ -365,17 +406,31 @@ const ERC20Container: FC<ERC20ContainerProps> = ({connectedWallet, refreshBalanc
         onSubmit: (values, {setSubmitting}) => {
             setSubmitting(true)
 
-            const contract = new ethers.Contract((process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || ""), ABI, web3Provider.getSigner())
+            const web3WithInjectedProvider = new Web3(window.ethereum)
+            const contract = new web3WithInjectedProvider.eth.Contract(ABI as AbiItem[], process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || "")
 
-            contract.mint(values.value).then((r: Transaction) => {
-                toast.info(<span>Minting in progress ... <a href={`https://goerli.etherscan.io/tx/${r.hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
-                refreshBalance(connectedWallet?.address || '')
-            }).catch(() => {
-                toast.error("Mint failed!")
-            }).finally(() => {
+            try {
+                contract.methods.mint(values.value)
+                    .send({from: connectedWallet!.address})
+                    .on('transactionHash', ((hash: string) => {
+                        toast.info(<span>Minting in progress ... <a href={`https://goerli.etherscan.io/tx/${hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
+                    }))
+                    .on('receipt', () => {
+                        toast.dismiss()
+                        toast.success("Mint completed!")
+                        setSubmitting(false)
+                        setActiveWriteContractAction(undefined)
+                    })
+                    .on('error', ((e: any) => {
+                        console.log(e)
+                        toast.error("The transaction has been sent but it failed ... See logs.")
+                        setSubmitting(false)
+                    }))
+            } catch (e) {
+                console.log(e)
+                toast.error("Mint failed, the transaction has not been sent!")
                 setSubmitting(false)
-                setActiveWriteContractAction(undefined)
-            })
+            }
         },
     });
 
@@ -386,17 +441,31 @@ const ERC20Container: FC<ERC20ContainerProps> = ({connectedWallet, refreshBalanc
         onSubmit: (values, {setSubmitting}) => {
             setSubmitting(true)
 
-            const contract = new ethers.Contract((process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || ""), ABI, web3Provider.getSigner())
+            const web3WithInjectedProvider = new Web3(window.ethereum)
+            const contract = new web3WithInjectedProvider.eth.Contract(ABI as AbiItem[], process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || "")
 
-            contract.burn(values.value).then((r: Transaction) => {
-                toast.info(<span>Burning in progress ... <a href={`https://goerli.etherscan.io/tx/${r.hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
-                refreshBalance(connectedWallet?.address || '')
-            }).catch(() => {
-                toast.error("Burn failed!")
-            }).finally(() => {
+            try {
+                contract.methods.burn(values.value)
+                    .send({from: connectedWallet!.address})
+                    .on('transactionHash', ((hash: string) => {
+                        toast.info(<span>Burning in progress ... <a href={`https://goerli.etherscan.io/tx/${hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
+                    }))
+                    .on('receipt', () => {
+                        toast.dismiss()
+                        toast.success("Burn completed!")
+                        setSubmitting(false)
+                        setActiveWriteContractAction(undefined)
+                    })
+                    .on('error', ((e: any) => {
+                        console.log(e)
+                        toast.error("The transaction has been sent but it failed ... See logs.")
+                        setSubmitting(false)
+                    }))
+            } catch (e) {
+                console.log(e)
+                toast.error("Burn failed, the transaction has not been sent!")
                 setSubmitting(false)
-                setActiveWriteContractAction(undefined)
-            })
+            }
         },
     });
 
@@ -408,17 +477,29 @@ const ERC20Container: FC<ERC20ContainerProps> = ({connectedWallet, refreshBalanc
         onSubmit: (values, {setSubmitting}) => {
             setSubmitting(true)
 
-            const contract = new ethers.Contract((process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || ""), ABI, web3Provider.getSigner())
+            const web3WithInjectedProvider = new Web3(window.ethereum)
+            const contract = new web3WithInjectedProvider.eth.Contract(ABI as AbiItem[], process.env.REACT_APP_GOERLI_ERC20_TOKEN_ADDRESS || "")
 
-            contract.transfer(values.recipient, values.amount).then((r: Transaction) => {
-                toast.info(<span>Transfer in progress ... <a href={`https://goerli.etherscan.io/tx/${r.hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
-                refreshBalance(connectedWallet?.address || '')
-            }).catch(() => {
-                toast.error("Transfer failed!")
-            }).finally(() => {
+
+            try {
+                contract.methods.transfer(values.recipient, values.amount)
+                    .send({from: connectedWallet!.address})
+                    .on('transactionHash', ((hash: string) => {
+                        toast.info(<span>Transfer in progress ... <a href={`https://goerli.etherscan.io/tx/${hash}`} target={"_blank"}>See transaction</a></span>, {autoClose: false})
+                    }))
+                    .on('receipt', () => {
+                        setSubmitting(false)
+                        setActiveWriteContractAction(undefined)
+                    })
+                    .on('error', ((e: any) => {
+                        console.log(e)
+                        toast.error("The transaction has been sent but it failed ... See logs.")
+                    }))
+            } catch (e) {
+                console.log(e)
+                toast.error("Transfer failed, the transaction has not been sent!")
                 setSubmitting(false)
-                setActiveWriteContractAction(undefined)
-            })
+            }
         },
     });
 
@@ -447,8 +528,8 @@ const ERC20Container: FC<ERC20ContainerProps> = ({connectedWallet, refreshBalanc
                         <h3>Read contract</h3>
                         <ul>
                             <li>What's the name of the token? {erc20.name}</li>
-                            <li>How many {erc20.symbol} are they circulating (total supply)? {erc20.totalSupply?.toString()}</li>
-                            <li>How many {erc20.symbol} tokens does the connected account have? {erc20.balanceOfConnectedAccount?.toString()}</li>
+                            <li>How many {erc20.symbol} are they circulating (total supply)? {erc20.totalSupply}</li>
+                            <li>How many {erc20.symbol} tokens does the connected account have? {erc20.balanceOfConnectedAccount}</li>
                         </ul>
                     </div>
 
