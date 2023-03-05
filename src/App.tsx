@@ -1,13 +1,13 @@
 import React, {FC, useEffect, useState} from 'react';
-import {ethers, Event, Transaction} from "ethers";
+import {ethers} from "ethers";
 import {ERC20Model, WalletModel} from "./models";
-import {CHAIN_GOERLI, CHAIN_POLYGON, ChainList, isZeroAddress, ZERO_ADDRESS} from "./constants";
+import {CHAIN_GOERLI, CHAIN_POLYGON, ChainList, isZeroAddress} from "./constants";
 import {toast} from "react-toastify";
 import DataTable, {TableColumn} from "react-data-table-component";
 import {useFormik} from "formik";
 import ABI from "./artifacts/ABI.json"
 import {AbiItem} from "web3-utils";
-import {EventData, Filter} from "web3-eth-contract";
+import {EventData} from "web3-eth-contract";
 
 import Web3 from "web3";
 
